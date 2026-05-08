@@ -3,4 +3,5 @@
 results
 data
 __pycache__
-LICENSE
+LICENSE.ipynb_checkpoints/
+qlora_env/
