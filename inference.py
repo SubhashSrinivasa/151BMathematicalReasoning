@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
                    help="Path to a LoRA adapter directory (optional). "
                         "If omitted, the base model is used as-is.")
     p.add_argument("--data-path",      default="data/private.jsonl")
-    p.add_argument("--output-path",    default="results/inference_results.jsonl")
+    p.add_argument("--output-path",    default="inference_results.jsonl")
     # Dataset
     p.add_argument("--n-samples",      type=int, default=None,
                    help="Cap the number of questions (None = full dataset).")
