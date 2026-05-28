@@ -34,7 +34,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 DEFAULT_MODEL_ID    = "Qwen/Qwen3-4B-Thinking-2507"
 DEFAULT_DATA_PATH   = "data/public.jsonl"
 DEFAULT_OUTPUT_PATH = "results/lora_results.jsonl"
-MAX_TOKENS          = 32768
+MAX_TOKENS          = 16000
 
 
 def banner(msg: str) -> None:
@@ -163,7 +163,7 @@ def main() -> None:
 
     sampling_params = SamplingParams(
         max_tokens=MAX_TOKENS,
-        temperature=0.6,
+        temperature=0.8,
         top_p=0.95,
         top_k=20,
         min_p=0.0,
