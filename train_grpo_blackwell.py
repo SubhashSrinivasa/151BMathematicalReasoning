@@ -22,15 +22,15 @@ BLACKWELL_CC_MAJOR = 10
 
 NUM_GENERATIONS    = 6
 MAX_PROMPT_LEN     = 2048
-MAX_COMPLETION     = 2048       # CHANGED: 768 -> 2048 (model needs space to reason)
+MAX_COMPLETION     = 2048
 PER_DEVICE_BS      = 1
 GRAD_ACCUM         = 12
-NUM_EPOCHS         = 2          # CHANGED: 1 -> 2 (more RL steps to reduce hedging)
-LR                 = 5e-6       # CHANGED: 1e-5 -> 5e-6 (continuing from existing checkpoint)
-BETA               = 0.01       # CHANGED: 0.0 -> 0.01 (KL penalty to prevent drift)
+NUM_EPOCHS         = 1          # CHANGED: 2 -> 1 (prevent shortcut learning on small datasets)
+LR                 = 5e-6
+BETA               = 0.01
 NUM_ITERATIONS     = 1
 TEMPERATURE        = 1.0
-VLLM_MEM           = 0.5        # CHANGED: 0.42 -> 0.5 (L40 has 48GB, more headroom)
+VLLM_MEM           = 0.5
 
 LORA_R             = 16
 LORA_ALPHA         = 32
@@ -38,12 +38,11 @@ LORA_DROPOUT       = 0.0
 SEED               = 42
 SAVE_EVERY_STEPS   = 5
 
-REWARD_WEIGHTS     = [1.0, 0.2, 0.3]   # CHANGED: added 0.3 for anti-hedge reward
+REWARD_WEIGHTS     = [1.0, 0.2, 0.3, 0.3]  # CHANGED: added 0.3 for thinking length reward
 JUDGE_TIMEOUT_S    = 5
 
 COMPUTE_DTYPE_NAME = "bfloat16"
 
-# ADDED: phrases that indicate hedging/refusal
 HEDGING_PHRASES = [
     "complex or challenging question",
     "difficult to provide a direct",
@@ -52,6 +51,10 @@ HEDGING_PHRASES = [
     "i cannot provide",
     "unable to answer",
 ]
+
+# ADDED: minimum thinking length to prevent empty <think> shortcut
+MIN_THINK_LEN      = 100   # chars — below this is penalized
+GOOD_THINK_LEN     = 500   # chars — above this gets a small bonus
 
 
 def banner(msg: str) -> None:
@@ -241,7 +244,6 @@ def make_reward_fns(judger):
             )
         return rewards
 
-    # ADDED: anti-hedging reward — penalizes refusal/hedging responses
     def anti_hedge_reward(completions, log_metric=None, **kwargs):
         rewards = []
         for comp in completions:
@@ -254,7 +256,37 @@ def make_reward_fns(judger):
             step(f"  anti_hedge: {n_hedging}/{len(rewards)} hedging responses this batch")
         return rewards
 
-    return correctness_reward, format_reward, anti_hedge_reward
+    # ADDED: thinking length reward — prevents empty <think> shortcut
+    # Model was learning to skip reasoning entirely and just guess
+    # This reward penalizes short/empty <think> blocks and rewards proper reasoning
+    def thinking_length_reward(completions, log_metric=None, **kwargs):
+        rewards = []
+        short_count = 0
+        for comp in completions:
+            text = _text(comp)
+            think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
+            if think_match:
+                think_len = len(think_match.group(1).strip())
+                if think_len < MIN_THINK_LEN:
+                    # empty or near-empty <think> — model is skipping reasoning
+                    rewards.append(-0.5)
+                    short_count += 1
+                elif think_len < GOOD_THINK_LEN:
+                    # some reasoning but not much — neutral
+                    rewards.append(0.0)
+                else:
+                    # proper reasoning chain — small bonus
+                    rewards.append(0.2)
+            else:
+                # no <think> block at all — penalize
+                rewards.append(-0.3)
+                short_count += 1
+        if log_metric is not None:
+            log_metric("short_think_ratio", short_count / len(rewards) if rewards else 0.0)
+            step(f"  thinking_length: {short_count}/{len(rewards)} short/empty think blocks")
+        return rewards
+
+    return correctness_reward, format_reward, anti_hedge_reward, thinking_length_reward
 
 
 def parse_args() -> argparse.Namespace:
@@ -354,16 +386,18 @@ def main() -> None:
         def on_log(self, args, state, control, logs=None, **kwargs):
             if not logs:
                 return control
-            z_combined = self._fmt_ratio(logs, "reward_zero_ratio")
-            z_corr     = self._fmt_ratio(logs, "correctness_reward_zero_ratio")
-            z_fmt      = self._fmt_ratio(logs, "format_reward_zero_ratio")
-            hedge      = self._fmt_ratio(logs, "hedge_ratio")
-            if any(v is not None for v in [z_combined, z_corr, z_fmt, hedge]):
+            z_combined   = self._fmt_ratio(logs, "reward_zero_ratio")
+            z_corr       = self._fmt_ratio(logs, "correctness_reward_zero_ratio")
+            z_fmt        = self._fmt_ratio(logs, "format_reward_zero_ratio")
+            hedge        = self._fmt_ratio(logs, "hedge_ratio")
+            short_think  = self._fmt_ratio(logs, "short_think_ratio")
+            if any(v is not None for v in [z_combined, z_corr, z_fmt, hedge, short_think]):
                 parts = []
-                if z_combined is not None: parts.append(f"combined=0: {z_combined:.1%}")
-                if z_corr     is not None: parts.append(f"correct=0: {z_corr:.1%}")
-                if z_fmt      is not None: parts.append(f"no boxed: {z_fmt:.1%}")
-                if hedge      is not None: parts.append(f"hedging: {hedge:.1%}")
+                if z_combined  is not None: parts.append(f"combined=0: {z_combined:.1%}")
+                if z_corr      is not None: parts.append(f"correct=0: {z_corr:.1%}")
+                if z_fmt       is not None: parts.append(f"no boxed: {z_fmt:.1%}")
+                if hedge       is not None: parts.append(f"hedging: {hedge:.1%}")
+                if short_think is not None: parts.append(f"short think: {short_think:.1%}")
                 step(f"step {state.global_step} zero-reward ratios — {', '.join(parts)}")
 
             issues = []
@@ -398,8 +432,8 @@ def main() -> None:
     sys.path.insert(0, ".")
     from judger import Judger
     judger = Judger(strict_extract=False)
-    correctness_reward, format_reward, anti_hedge_reward = make_reward_fns(judger)
-    step("judger + reward functions ready (correctness + format + anti-hedge).")
+    correctness_reward, format_reward, anti_hedge_reward, thinking_length_reward = make_reward_fns(judger)
+    step("judger + reward functions ready (correctness + format + anti-hedge + thinking-length).")
 
     banner("STEP 3 / 6  Load tokenizer + 4-bit base model + LoRA")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -523,7 +557,7 @@ def main() -> None:
         model=model,
         args=grpo_config,
         train_dataset=dataset,
-        reward_funcs=[correctness_reward, format_reward, anti_hedge_reward],
+        reward_funcs=[correctness_reward, format_reward, anti_hedge_reward, thinking_length_reward],
         processing_class=tokenizer,
     )
     trainer.add_callback(GrpoTrainingLogCallback(args.save_every_steps))
