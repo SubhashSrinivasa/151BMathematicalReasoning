@@ -20,6 +20,10 @@ We used A100 and it takes about 6 hours inference on the full private dataset.
 
 ## Downloading the model
 
+- follow the steps in the final_inference.py as it includes model downloading
+- as a fall back, run this script:
+"huggingface-cli download ig123/Susi-Qwen3-4b-Thinking-2507 \
+    --local-dir ./models/Susi-Qwen3-4b-Thinking-2507"
 
 ## Running run_inference()
 run "python final_inference.py --output my_submission.csv"
