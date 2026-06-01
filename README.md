@@ -26,7 +26,7 @@ We used A100 and it takes about 6 hours inference on the full private dataset.
     --local-dir ./models/Susi-Qwen3-4b-Thinking-2507"
 
 ## Running run_inference()
-run "python final_inference.py --output my_submission.csv"
+run "python final_inference.py"
 
 ## Running End to End Pipeline 
 ### Step 1: SFT Training
